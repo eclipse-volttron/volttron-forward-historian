@@ -1,4 +1,5 @@
 {
-    "destination-vip": "tcp://127.0.0.1:22916",
-    "destination-serverkey": null
+    "destination-address": "tcp://<REMOTE_IP>:<REMOTE_PORT>",
+    "destination-serverkey": "<REMOTE_SERVER_KEY>",
+    "destination-vip": "volttron-forward-historian-5.1_1"
 }

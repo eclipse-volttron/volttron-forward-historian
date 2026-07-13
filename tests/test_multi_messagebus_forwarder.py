@@ -25,9 +25,22 @@
 import pytest
 import gevent
 import os
-from volttron.platform import get_services_core
-from volttron.platform.messaging import headers as headers_mod
-from volttron.platform.agent import utils
+from pathlib import Path
+
+def get_services_core(name):
+    if "ForwardHistorian" in name:
+        return Path(__file__).parents[1]
+    elif "SQLHistorian" in name or "SQLiteHistorian" in name:
+        # Resolve dynamically or fall back to standard naming
+        base_path = Path(__file__).parents[3]
+        sqlite_path = base_path / "volttron-sqlite-historian"
+        if sqlite_path.exists():
+            return sqlite_path
+        return "volttron-sqlite-historian"
+    return ""
+
+from volttron.client.messaging import headers as headers_mod
+from volttron import utils
 from datetime import datetime
 from mock import MagicMock
 from volttrontesting.fixtures.volttron_platform_fixtures import volttron_multi_messagebus

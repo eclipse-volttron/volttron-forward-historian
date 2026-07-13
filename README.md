@@ -1,107 +1,117 @@
+# VOLTTRON Forward Historian Agent
 
-# Forward Historian
+The **Forward Historian** is a specialized agent designed to send/forward data from one VOLTTRON instance to another. 
 
+Its primary purpose is to allow a remote target instance's pubsub bus to receive and simulate data as if it were coming from a real local device. If the target instance or any "required target agents" become unavailable, the Forward Historian will queue incoming messages in its local backup cache (up to its maximum configured capacity) and publish them in bulk once the destination comes back online.
 
-The Forward Historian is used to send data from one instance of VOLTTRON
-to another. This agents primary purpose is to allow the target
-instance\'s pubsub bus to simulate data coming from a real device. If
-the target instance becomes unavailable or one of the \"required
-agents\" becomes unavailable then the cache of this agent will build up
-until it reaches it\'s maximum capacity or the instance and agents come
-back online.
+This modular version of the agent has been updated for compatibility with modern **modular VOLTTRON (VOLTTRON 11.x and volttron-core 2.x)**.
 
-The Forward Historian now uses the configuration store for storing its
-configurations. This allows dynamic updating of configuration without
-having to rebuild the agent.
+---
 
-## FAQ /Notes
+## Installation
 
-By default the Forward Historian adds an X-Forwarded and
-X-Forwarded-From header to the forwarded message. The X-Forwarded-From
-uses the instance-name of the platform (ip address:port by default).
+To set up the Forward Historian in your virtual environment:
+
+1. **Activate your Python environment:**
+   ```bash
+   source <path-to-your-venv>/bin/activate
+   ```
+
+2. **Install the Forward Historian package in editable developer mode:**
+   ```bash
+   pip install -e <path-to-volttron-forward-historian-directory>
+   ```
+
+3. **Install the required SQLite Historian dependency (for local caching):**
+   ```bash
+   pip install -e <path-to-volttron-sqlite-historian-directory>
+   ```
+
+---
 
 ## Configuration Options
 
-The following JSON configuration file shows all the options currently
-supported by the ForwardHistorian agent.
+The Forward Historian uses the VOLTTRON Configuration Store. It can be dynamically configured. Below is an example configuration file:
 
-``` {.python}
+```json
 {
-    # destination-serverkey
-    #   The destination instance's publickey. Required if the
-    #   destination-vip-address has not been added to the known-host file.
-    #   See vctl auth --help for all instance security options.
-    #
-    #   This can be retrieved either through the command:
-    #       vctl auth serverkey
-    #   Or if the web is enabled on the destination through the browser at:
-    #       http(s)://hostaddress:port/discovery/
-    "destination-serverkey": null,
+    // Address of the target remote platform (REQUIRED)
+    "destination-vip": "tcp://127.0.0.1:22916",
 
-    # destination-vip-address - REQUIRED
-    #   Address of the target platform.
-    #   Examples:
-    #       "destination-vip": "ipc://@/home/volttron/.volttron/run/vip.socket"
-    #       "destination-vip": "tcp://127.0.0.1:22916"
-    "destination-vip": "tcp://<ip address>:<port>"
+    // Allow checking on the remote instance to verify peer identities are connected before forwarding
+    "required_target_agents": ["platform.historian"],
 
-    # required_target_agents
-    #   Allows checking on the remote instance to verify peer identtites
-    #   are connected before publishing.
-    #
-    #   Example:
-    #       Require the platform.historian agent to be present on the
-    #       destination instance before publishing.
-    #       "required_target_agent" ["platform.historian"]
-    "required_target_agents": [],
-
-    # capture_device_data
-    #   This is True by default and allows the Forwarder to forward
-    #   data published from the device topic
+    // Subscription toggles
     "capture_device_data": true,
-
-    # capture_analysis_data
-    #   This is True by default and allows the Forwarder to forward
-    #   data published from the device topic
     "capture_analysis_data": true,
-
-    # capture_log_data
-    #   This is True by default and allows the Forwarder to forward
-    #   data published from the datalogger topic
     "capture_log_data": true,
-
-    # capture_record_data
-    #   This is True by default and allows the Forwarder to forward
-    #   data published from the record topic
     "capture_record_data": true,
 
-    # custom_topic_list
-    #   Unlike other historians, the forward historian can re-publish from
-    #   any topic.  The custom_topic_list is prefixes to subscribe to on
-    #   the local bus and forward to the destination instance.
+    // Custom topics to subscribe to locally and forward to the destination instance
     "custom_topic_list": ["actuator", "alert"],
 
-    # cache_only
-    #   Allows one to put the forward historian in a cache only mode so that
-    #   data is backed up while doing operations on the destination
-    #   instance.
-    #
-    #   Setting this to true will start cache to backup and not attempt
-    #   to publish to the destination instance.
+    // Puts the forwarder in cache-only mode (doesn't attempt to publish immediately)
     "cache_only": false,
 
-    # topic_replace_list - Deprecated in favor of retrieving the list of
-    #   replacements from the VCP on the current instance.
+    // Replace matching parts of topics before forwarding
     "topic_replace_list": [
-        #{"from": "FromString", "to": "ToString"}
+        {"from": "PNNL/BUILDING_1", "to": "PNNL/BUILDING1_ANON"}
     ],
 
-    # Publish a message to the log after a certain number of "successful"
-    # publishes.  To disable the message to not print anything set the
-    # count to 0.
-    #
-    # Note "successful" means that it was removed from the backup cache.
+    // Print progress to log after a certain number of successful bulk publishes
     "message_publish_count": 10000
-
 }
+```
+
+---
+
+## Setup & Running
+
+Once installed, configure and start the agent on your VOLTTRON platform:
+
+1. **Create your configuration file** (e.g., `config.json`).
+2. **Install and start the agent on your platform:**
+   ```bash
+   volttron -vv &
+   vctl install volttron-forward-historian --vip-identity platform.forwarder --config config.json --start
+   ```
+
+> **IMPORTANT — Configuration Store Name**
+> The Forward Historian (like all base historians) only reads the configuration
+> entry stored under the exact name **`config`**. If your configuration ends up
+> stored under a different name (for example `config.json`), the agent will fall
+> back to empty defaults and log `No destination address/vip configured`.
+>
+> Verify and, if necessary, correct the stored config name:
+> ```bash
+> # List the stored configuration names for the agent
+> vctl config list <agent-vip-identity-or-name>
+>
+> # If it shows "config.json" instead of "config", store it under "config":
+> vctl config store <agent-vip-identity-or-name> config config.json --json
+>
+> # (optional) remove the incorrectly named entry
+> vctl config delete <agent-vip-identity-or-name> config.json
+> ```
+> After correcting the config store, restart the agent.
+
+### Configuration Keys
+
+Both dash- and underscore-separated key names are accepted
+(e.g. `destination-vip` or `destination_vip`).
+
+> **Note on `required_target_agents`**
+> If you list an agent here (e.g. `platform.historian`), the forwarder will not
+> publish until an agent with that identity is running on the destination
+> platform. For initial connectivity testing, set this to `[]` and run a simple
+> listener on the destination to confirm data is flowing.
+
+---
+
+## Running Tests
+
+To run the integration and unit tests for this agent, make sure `volttron-testing` is installed:
+
+```bash
+pytest tests/
 ```

@@ -1,12 +1,12 @@
 import gevent
 import pytest
 
-from volttrontesting.utils.agent_additions import add_forward_historian
-from volttrontesting.utils.platformwrapper import PlatformWrapper, \
+from volttrontesting.agent_additions import add_forward_historian
+from volttrontesting.platformwrapper import PlatformWrapper, \
     start_wrapper_platform
-from volttrontesting.utils.utils import (publish_device_messages,
-                                         validate_published_device_data,
-                                         publish_message)
+from volttrontesting.utils import (publish_device_messages,
+                                   validate_published_device_data,
+                                   publish_message)
 
 
 @pytest.fixture(scope="module")

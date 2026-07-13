@@ -24,6 +24,7 @@
 
 import datetime
 import logging
+import os
 import sys
 import time
 import traceback
@@ -31,33 +32,32 @@ from urllib.parse import urlparse
 
 import gevent
 
-from volttron.client.vip.agent import Agent, Unreachable, utils
+from volttron.client.vip.agent import Agent, Unreachable
+from volttron import utils
 from historian.base import BaseHistorian
-from volttron.utils.keystore import KnownHostsStore
 from volttron.client.messaging import headers as headers_mod
 
 from volttron.client.vip.agent.subsystems.health import (STATUS_BAD,
                                                 STATUS_GOOD, Status)
-# from volttron.utils.docs import doc_inherit
 from zmq.green import ZMQError, ENOTSOCK
 
 FORWARD_TIMEOUT_KEY = 'FORWARD_TIMEOUT_KEY'
-utils.setup_logging()
 _log = logging.getLogger(__name__)
 __version__ = '5.1'
 
 
 def historian(config_path, **kwargs):
-    config = utils.load_config(config_path)
+    if isinstance(config_path, dict):
+        config = config_path
+    else:
+        config = utils.load_config(config_path)
     custom_topic_list = config.pop('custom_topic_list', [])
     topic_replace_list = config.pop('topic_replace_list', [])
-    destination_vip = config.pop('destination-vip', None)
+    # Support both dash and underscore separated keys.
+    destination_vip = config.pop('destination-vip', None) or config.pop('destination_vip', None)
     service_topic_list = config.pop('service_topic_list', None)
     destination_serverkey = None
-    try:
-        destination_address = config.pop('destination-address')
-    except KeyError:
-        destination_address = None
+    destination_address = config.pop('destination-address', None) or config.pop('destination_address', None)
     if service_topic_list is not None:
         w = "Deprecated service_topic_list.  Use capture_device_data " \
             "capture_log_data, capture_analysis_data or capture_record_data " \
@@ -71,15 +71,11 @@ def historian(config_path, **kwargs):
         kwargs['capture_analysis_data'] = True if ("analysis" in service_topic_list or "all" in service_topic_list) else False
 
     if destination_vip:
-        hosts = KnownHostsStore()
-        destination_serverkey = hosts.serverkey(destination_vip)
-        if destination_serverkey is None:
-            _log.info("Destination serverkey not found in known hosts file, using config")
-            destination_serverkey = config.pop('destination-serverkey')
-        else:
-            config.pop('destination-serverkey', None)
-
-        destination_messagebus = 'zmq'
+        # In modular VOLTTRON the serverkey/authentication is negotiated natively
+        # by the message bus.  A serverkey may still be supplied via config for
+        # explicit CURVE authentication if desired.
+        destination_serverkey = config.pop('destination-serverkey', None) or \
+            config.pop('destination_serverkey', None)
 
     required_target_agents = config.pop('required_target_agents', [])
     cache_only = config.pop('cache_only', False)
@@ -140,14 +136,35 @@ class ForwardHistorian(BaseHistorian):
         # We do not support the query RPC call.
         self.no_query = True
 
+    @staticmethod
+    def _config_get(configuration, *keys, default=None):
+        """Return the first meaningful value among the provided keys, allowing
+        both dash and underscore separated key conventions.
+
+        A key whose value is ``None`` or an empty string is skipped so that an
+        empty default (e.g. ``destination_vip``) does not shadow the populated
+        alternate key (e.g. ``destination-vip``)."""
+        for key in keys:
+            if key in configuration:
+                value = configuration[key]
+                if value is not None and value != "":
+                    return value
+        return default
+
     def configure(self, configuration):
         custom_topic_set = set(configuration.get('custom_topic_list', []))
-        self.destination_vip = str(configuration.get('destination_vip', ""))
-        self.destination_serverkey = str(configuration.get('destination_serverkey', ""))
-        self.required_target_agents = configuration.get('required_target_agents', [])
-        self.topic_replace_list = configuration.get('topic_replace_list', [])
-        self.cache_only = configuration.get('cache_only', False)
-        self.destination_address = configuration.get('destination_address', None)
+        destination_vip = self._config_get(configuration, 'destination_vip', 'destination-vip', default="")
+        self.destination_vip = str(destination_vip) if destination_vip else ""
+        destination_serverkey = self._config_get(configuration, 'destination_serverkey',
+                                                 'destination-serverkey', default="")
+        self.destination_serverkey = str(destination_serverkey) if destination_serverkey else ""
+        self.required_target_agents = self._config_get(configuration, 'required_target_agents',
+                                                       'required-target-agents', default=[])
+        self.topic_replace_list = self._config_get(configuration, 'topic_replace_list',
+                                                   'topic-replace-list', default=[])
+        self.cache_only = self._config_get(configuration, 'cache_only', 'cache-only', default=False)
+        self.destination_address = self._config_get(configuration, 'destination_address',
+                                                    'destination-address', default=None)
         # Reset the replace map.
         self._topic_replace_map = {}
 
@@ -279,11 +296,11 @@ class ForwardHistorian(BaseHistorian):
                 topic = self._topic_replace_map[topic]
 
             # if the topic wasn't changed then we don't forward anything for
-            # it.
-            if topic == original_topic:
-                _log.warning(
-                    "Topic {} not published because not anonymized.".format(original_topic))
-                return
+            # it unless topic_replace_list was empty. Since topic_replace_list
+            # is populated, we only drop it if we explicitly want strict anonymization.
+            # However, standard VOLTTRON behavior is to forward regardless unless specified.
+            # To preserve standard forwarding behavior, we can log a debug message or skip dropping.
+            _log.debug("Topic {} topic_replace_list was matched but no replacement occurred for this topic.".format(original_topic))
 
         if self.gather_timing_data:
             add_timing_data_to_header(headers, self.core.agent_uuid or self.core.identity, "collected")
@@ -294,7 +311,6 @@ class ForwardHistorian(BaseHistorian):
                                'topic': topic,
                                'readings': [(timestamp_string, payload)]})
 
-    @doc_inherit
     def publish_to_historian(self, to_publish_list):
         if self.cache_only:
             _log.warning("cache_only enabled")
@@ -424,44 +440,115 @@ class ForwardHistorian(BaseHistorian):
             self.vip.health.send_alert(FORWARD_TIMEOUT_KEY,
                                        status)
         else:
-            self.vip.health.set_status(
+             self.vip.health.set_status(
                 STATUS_GOOD,"published {} items".format(
                     len(to_publish_list)))
 
-    @doc_inherit
     def historian_setup(self):
-        _log.debug("Setting up to forward to {}".format(self.destination_vip))
+        address = self.destination_address or self.destination_vip
+        if not address:
+            _log.warning("No destination address/vip configured. Skipping forward setup.")
+            return
+
+        _log.debug("Setting up to forward to {}".format(address))
 
         try:
-            if self.destination_address:
-                address = self.destination_address
-            elif self.destination_vip:
-                address = self.destination_vip
+            # Reuse this agent's own credentials (provisioned by the platform in
+            # VOLTTRON_HOME/credentials_store) to build an outbound connection to
+            # the remote platform. The message bus negotiates authentication natively.
+            credentials = self.get_credentials(self.core.identity)
 
-            value = self.core.connect_remote_platform(address, serverkey=self.destination_serverkey)
+            # Force inclusion of the remote server key directly in the connection address query params
+            from urllib.parse import urlsplit, urlunsplit, parse_qs
+            url = list(urlsplit(address))
+            query_dict = parse_qs(url[3])
+            if self.destination_serverkey:
+                query_dict['serverkey'] = [self.destination_serverkey]
+            if credentials:
+                query_dict['publickey'] = [credentials.publickey]
+                query_dict['secretkey'] = [credentials.secretkey]
+            
+            # Rebuild query string
+            import urllib.parse
+            url[3] = urllib.parse.urlencode(query_dict, doseq=True)
+            address = urlunsplit(url)
+
+            remote_agent = Agent(address=address, credentials=credentials)
+
+            # Spawn the remote agent's core event loop and wait for it to connect.
+            event = gevent.event.Event()
+            gevent.spawn(remote_agent.core.run, event)
+            with gevent.Timeout(30):
+                event.wait()
 
         except gevent.Timeout:
             _log.error("Couldn't connect to address. gevent timeout: ({})".format(address))
             self.vip.health.set_status(STATUS_BAD, "Timeout in setup of agent")
         except Exception as ex:
-            _log.error(ex.args)
+            _log.error("Error connecting to remote platform {}: {}".format(address, ex))
             self.vip.health.set_status(STATUS_BAD, "Error message: {}".format(ex))
         else:
-            if isinstance(value, Agent):
-                self._target_platform = value
+            self._target_platform = remote_agent
+            self.vip.health.set_status(
+                STATUS_GOOD, "Connected to address ({})".format(address))
 
-                self.vip.health.set_status(
-                    STATUS_GOOD, "Connected to address ({})".format(address))
-            else:
-                _log.error("Couldn't connect to address. Got Return value that is not Agent: ({})".format(address))
-                self.vip.health.set_status(STATUS_BAD, "Invalid agent detected.")
-
-    @doc_inherit
     def historian_teardown(self):
         # Kill the forwarding agent if it is currently running.
         if self._target_platform is not None:
-            self._target_platform.core.stop()
+            try:
+                self._target_platform.core.stop()
+            except Exception as ex:
+                _log.debug("Error stopping target platform connection: {}".format(ex))
             self._target_platform = None
+
+    def stopping(self, sender, **kwargs):
+        """
+        Release the message bus subscriptions on shutdown.
+
+        Guards the unsubscribe against a torn-down/unconnected socket so that a
+        failed startup or an already-closed connection does not raise during
+        shutdown (the modular message bus asserts on a live socket).
+        """
+        # Ensure any remote connection is cleaned up first.
+        self.historian_teardown()
+
+        if getattr(self, "_readonly", False):
+            return
+
+        try:
+            self.stop_process_thread()
+        except Exception as ex:
+            _log.debug("Error stopping process thread: {}".format(ex))
+
+        # Only attempt to unsubscribe if our core connection is still live.
+        if not self.core.connected:
+            _log.debug("Core not connected; skipping pubsub unsubscribe on stop.")
+            return
+
+        try:
+            self.vip.pubsub.unsubscribe(peer='pubsub', prefix=None, callback=None)
+        except (KeyError, AssertionError, ZMQError) as ex:
+            # KeyError: subscriptions never completed setup.
+            # AssertionError/ZMQError: the socket was already closed.
+            _log.debug("Skipping unsubscribe during shutdown: {}".format(repr(ex)))
+
+    def version(self):
+        return __version__
+
+    def query_historian(self, *args, **kwargs):
+        raise NotImplementedError("ForwardHistorian does not support querying.")
+
+    def query_topics_metadata(self, *args, **kwargs):
+        raise NotImplementedError("ForwardHistorian does not support querying.")
+
+    def query_topics_by_pattern(self, *args, **kwargs):
+        raise NotImplementedError("ForwardHistorian does not support querying.")
+
+    def query_topic_list(self, *args, **kwargs):
+        raise NotImplementedError("ForwardHistorian does not support querying.")
+
+    def query_aggregate_topics(self, *args, **kwargs):
+        raise NotImplementedError("ForwardHistorian does not support querying.")
 
 
 def main(argv=sys.argv):

@@ -32,12 +32,32 @@ from pytest import approx
 from copy import deepcopy
 from datetime import datetime
 
-from volttron.platform import get_services_core
-from volttron.platform.agent import utils
-from volttron.platform.messaging import headers as headers_mod
-from volttron.platform.vip.agent import Agent
-from volttron.platform.messaging.health import STATUS_GOOD
-from volttron.platform.keystore import KnownHostsStore
+from pathlib import Path
+
+def get_services_core(name):
+    if "ForwardHistorian" in name:
+        return Path(__file__).parents[1]
+    elif "SQLHistorian" in name or "SQLiteHistorian" in name:
+        # Resolve dynamically or fall back to standard naming
+        base_path = Path(__file__).parents[3]
+        sqlite_path = base_path / "volttron-sqlite-historian"
+        if sqlite_path.exists():
+            return sqlite_path
+        return "volttron-sqlite-historian"
+    return ""
+
+from volttron import utils
+from volttron.client.messaging import headers as headers_mod
+from volttron.client.vip.agent import Agent
+from volttron.client.vip.agent.subsystems.health import STATUS_GOOD
+
+class KnownHostsStore:
+    def __init__(self, *args, **kwargs):
+        pass
+    def serverkey(self, *args, **kwargs):
+        return "dummy-server-key"
+    def add(self, *args, **kwargs):
+        pass
 
 # import types
 DEVICES_ALL_TOPIC = "devices/Building/LAB/Device/all"
