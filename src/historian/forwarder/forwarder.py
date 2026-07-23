@@ -43,7 +43,7 @@ from zmq.green import ZMQError, ENOTSOCK
 
 FORWARD_TIMEOUT_KEY = 'FORWARD_TIMEOUT_KEY'
 _log = logging.getLogger(__name__)
-__version__ = '5.1'
+__version__ = '2.0.0rc0'
 
 
 def historian(config_path, **kwargs):
