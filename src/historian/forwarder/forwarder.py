@@ -467,7 +467,7 @@ class ForwardHistorian(BaseHistorian):
             if credentials:
                 query_dict['publickey'] = [credentials.publickey]
                 query_dict['secretkey'] = [credentials.secretkey]
-            
+
             # Rebuild query string
             import urllib.parse
             url[3] = urllib.parse.urlencode(query_dict, doseq=True)
