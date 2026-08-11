@@ -43,7 +43,7 @@ from another host.
 On the destination host, edit the platform config using `nano` or your editor:
 
 ```bash
-nano /home/user/.volttron-destination/config
+nano YOUR_VOLTTRON_HOME/config
 ```
 
 Under `[volttron]`, set an externally reachable address. For example:
@@ -65,7 +65,7 @@ ss -lntp | grep 22916
 From the source host, verify network access:
 
 ```bash
-nc -vz 192.168.1.248 22916
+nc -vz YOUR_REMOTE_HOST_IP 22916
 ```
 
 Do not continue until this succeeds. If it fails, correct the destination
@@ -136,7 +136,7 @@ address and the `publickey` copied in Step 2:
 
 ```json
 {
-  "destination-address": "tcp://192.168.1.248:22916",
+  "destination-address": "tcp://YOUR_REMOTE_HOST_IP:22916",
   "destination-serverkey": "paste-the-destination-platform-publickey-here",
   "required_target_agents": [],
   "capture_device_data": true,
