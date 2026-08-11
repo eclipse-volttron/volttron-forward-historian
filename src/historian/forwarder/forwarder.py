@@ -28,13 +28,13 @@ import os
 import sys
 import time
 import traceback
-from urllib.parse import urlparse
 
 import gevent
 
 from volttron.client.vip.agent import Agent, Unreachable
 from volttron import utils
 from historian.base import BaseHistorian
+from historian.base.base_historian import add_timing_data_to_header
 from volttron.client.messaging import headers as headers_mod
 
 from volttron.client.vip.agent.subsystems.health import (STATUS_BAD,
@@ -56,7 +56,6 @@ def historian(config_path, **kwargs):
     # Support both dash and underscore separated keys.
     destination_vip = config.pop('destination-vip', None) or config.pop('destination_vip', None)
     service_topic_list = config.pop('service_topic_list', None)
-    destination_serverkey = None
     destination_address = config.pop('destination-address', None) or config.pop('destination_address', None)
     if service_topic_list is not None:
         w = "Deprecated service_topic_list.  Use capture_device_data " \
@@ -70,12 +69,13 @@ def historian(config_path, **kwargs):
         kwargs['capture_record_data'] = True if ("record" in service_topic_list or "all" in service_topic_list) else False
         kwargs['capture_analysis_data'] = True if ("analysis" in service_topic_list or "all" in service_topic_list) else False
 
-    if destination_vip:
-        # In modular VOLTTRON the serverkey/authentication is negotiated natively
-        # by the message bus.  A serverkey may still be supplied via config for
-        # explicit CURVE authentication if desired.
-        destination_serverkey = config.pop('destination-serverkey', None) or \
-            config.pop('destination_serverkey', None)
+    # The serverkey must always be popped from the config, regardless of whether
+    # the destination was given as ``destination-vip`` or ``destination-address``.
+    # Leaving it in ``config`` causes update_kwargs_with_config() to pass it as a
+    # keyword argument, which collides with the positional argument below and
+    # raises "got multiple values for argument 'destination_serverkey'".
+    destination_serverkey = config.pop('destination-serverkey', None) or \
+        config.pop('destination_serverkey', None)
 
     required_target_agents = config.pop('required_target_agents', [])
     cache_only = config.pop('cache_only', False)
@@ -152,7 +152,24 @@ class ForwardHistorian(BaseHistorian):
         return default
 
     def configure(self, configuration):
+        # The BaseHistorian merges the config store contents on top of the
+        # default config produced by __init__().  The default config uses
+        # underscore separated keys, so a user supplying the documented
+        # dash separated keys (e.g. "destination-address") would otherwise be
+        # shadowed by the stale install time value.  Normalise the incoming
+        # configuration so that an explicitly supplied dash separated key
+        # always wins over the underscore separated default.
+        configuration = dict(configuration)
+        for dashed in ('destination-address', 'destination-vip', 'destination-serverkey',
+                       'required-target-agents', 'topic-replace-list', 'cache-only'):
+            if dashed in configuration:
+                value = configuration[dashed]
+                if value is not None and value != "":
+                    configuration[dashed.replace('-', '_')] = value
+
         custom_topic_set = set(configuration.get('custom_topic_list', []))
+        previous_destination = (self.destination_address, self.destination_vip,
+                                self.destination_serverkey)
         destination_vip = self._config_get(configuration, 'destination_vip', 'destination-vip', default="")
         self.destination_vip = str(destination_vip) if destination_vip else ""
         destination_serverkey = self._config_get(configuration, 'destination_serverkey',
@@ -165,6 +182,18 @@ class ForwardHistorian(BaseHistorian):
         self.cache_only = self._config_get(configuration, 'cache_only', 'cache-only', default=False)
         self.destination_address = self._config_get(configuration, 'destination_address',
                                                     'destination-address', default=None)
+
+        # If the destination changed, drop the existing remote connection so the
+        # next publish rebuilds it against the new address/serverkey.  Without
+        # this the agent keeps forwarding to the old destination until a failure.
+        if previous_destination != (self.destination_address, self.destination_vip,
+                                    self.destination_serverkey):
+            if self._target_platform is not None:
+                _log.info("Destination changed; tearing down existing remote connection.")
+                self.historian_teardown()
+            # Clear any active backoff so the new destination is tried immediately.
+            self._last_timeout = 0
+
         # Reset the replace map.
         self._topic_replace_map = {}
 
@@ -190,6 +219,12 @@ class ForwardHistorian(BaseHistorian):
                                             prefix=prefix,
                                             callback=self.capture_data).get(timeout=5.0)
                 self._current_custom_topics.remove(prefix)
+            except AssertionError:
+                # The message bus asserts on a torn down socket.  This happens
+                # routinely while the agent is shutting down, so it is not an
+                # error worth reporting at ERROR level.
+                self._current_custom_topics.discard(prefix)
+                _log.debug("Connection closed while unsubscribing from %s.", prefix)
             except (gevent.Timeout, Exception) as e:
                 _log.error("Failed to unsubscribe from {}: {}".format(prefix, repr(e)))
 
@@ -258,13 +293,11 @@ class ForwardHistorian(BaseHistorian):
 
         data = message
         try:
-            # 2.0 agents compatability layer makes sender = pubsub.compat
-            # so we can do the proper thing when it is here
-            # _log.debug("message in capture_data {}".format(message))
+            # The legacy VOLTTRON 2.0 "pubsub.compat" sender is not supported on
+            # the modular message bus, so the message is forwarded as received.
             if sender == 'pubsub.compat':
-                # data = jsonapi.loads(message[0])
-                data = compat.unpack_legacy_message(headers, message)
-                #_log.debug("data in capture_data {}".format(data))
+                _log.warning("Received a legacy pubsub.compat message on topic %s; "
+                             "forwarding payload unmodified.", topic)
             if isinstance(data, dict):
                 data = data
             elif isinstance(data, (int, float)):
@@ -295,12 +328,8 @@ class ForwardHistorian(BaseHistorian):
                     self._topic_replace_map[k] = v
                 topic = self._topic_replace_map[topic]
 
-            # if the topic wasn't changed then we don't forward anything for
-            # it unless topic_replace_list was empty. Since topic_replace_list
-            # is populated, we only drop it if we explicitly want strict anonymization.
-            # However, standard VOLTTRON behavior is to forward regardless unless specified.
-            # To preserve standard forwarding behavior, we can log a debug message or skip dropping.
-            _log.debug("Topic {} topic_replace_list was matched but no replacement occurred for this topic.".format(original_topic))
+            if topic != original_topic:
+                _log.debug("Topic %s rewritten to %s before forwarding.", original_topic, topic)
 
         if self.gather_timing_data:
             add_timing_data_to_header(headers, self.core.agent_uuid or self.core.identity, "collected")
@@ -320,8 +349,6 @@ class ForwardHistorian(BaseHistorian):
 
         _log.debug("publish_to_historian number of items: {}"
                    .format(len(to_publish_list)))
-        parsed = urlparse(self.core.address)
-        next_dest = urlparse(self.destination_vip)
         current_time = self.timestamp()
         last_time = self._last_timeout
         _log.debug('Lasttime: {} currenttime: {}'.format(last_time,
@@ -332,6 +359,13 @@ class ForwardHistorian(BaseHistorian):
             if self.timestamp() < self._last_timeout + 60:
                 _log.debug('Not allowing send < 60 seconds from failure')
                 return
+
+        # Drop a cached connection whose underlying socket has gone away (for
+        # example because the destination platform restarted).  Without this the
+        # agent would keep reusing a dead connection and never recover.
+        if self._target_platform is not None and not self._remote_connection_alive():
+            _log.info("Remote connection is no longer alive; reconnecting.")
+            self.historian_teardown()
 
         if not self._target_platform:
             self.historian_setup()
@@ -356,6 +390,9 @@ class ForwardHistorian(BaseHistorian):
                 _log.error(traceback.format_exc())
                 self.vip.health.set_status(
                     STATUS_BAD, err)
+                # The cached remote connection may be dead (e.g. the destination
+                # platform restarted).  Drop it so it is rebuilt next time.
+                self.historian_teardown()
                 return
 
         for x in to_publish_list:
@@ -423,6 +460,11 @@ class ForwardHistorian(BaseHistorian):
                     _log.error(traceback.format_exc())
                     self.vip.health.set_status(
                         STATUS_BAD, err)
+                    # The remote connection may have died underneath us (for
+                    # example the destination platform restarted), which leaves
+                    # the cached agent with a closed socket.  Tear it down so the
+                    # next pass rebuilds it instead of failing forever.
+                    self.historian_teardown()
                     # Before returning lets mark any that weren't errors
                     # as sent.
                     self.report_handled(handled_records)
@@ -491,6 +533,30 @@ class ForwardHistorian(BaseHistorian):
             self._target_platform = remote_agent
             self.vip.health.set_status(
                 STATUS_GOOD, "Connected to address ({})".format(address))
+
+    def _remote_connection_alive(self) -> bool:
+        """Return True if the cached remote connection still has a live socket.
+
+        When the destination platform restarts, the connection object survives
+        but its underlying ZMQ socket is torn down, which surfaces later as
+        ``AttributeError: 'NoneType' object has no attribute 'send_vip'``.
+        Detect that here so the connection can be rebuilt instead."""
+        target = self._target_platform
+        if target is None:
+            return False
+        try:
+            connection = target.core.connection
+        except Exception:
+            return False
+        if connection is None:
+            return False
+        # ZmqConnection exposes both of these; guard in case of other buses.
+        try:
+            if not connection.is_connected():
+                return False
+        except Exception:
+            pass
+        return getattr(connection, "_socket", True) is not None
 
     def historian_teardown(self):
         # Kill the forwarding agent if it is currently running.

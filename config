@@ -1,5 +1,12 @@
 {
-    "destination-address": "tcp://<REMOTE_IP>:<REMOTE_PORT>",
-    "destination-serverkey": "<REMOTE_SERVER_KEY>",
-    "destination-vip": "volttron-forward-historian-5.1_1"
+  "destination-address": "tcp://DESTINATION_HOST:22916",
+  "destination-serverkey": "DESTINATION_PLATFORM_PUBLICKEY",
+  "required_target_agents": [],
+  "capture_device_data": true,
+  "capture_analysis_data": false,
+  "capture_log_data": false,
+  "capture_record_data": false,
+  "custom_topic_list": [],
+  "topic_replace_list": [],
+  "cache_only": false
 }
