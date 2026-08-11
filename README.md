@@ -51,7 +51,7 @@ Under `[volttron]`, set an externally reachable address. For example:
 ```ini
 [volttron]
 address = tcp://0.0.0.0:22916
-instance-name = volttron-destination
+instance-name = YOUR_DESTINATION_INSTANCE_NAME
 messagebus = zmq
 auth-enabled = True
 ```
@@ -78,20 +78,20 @@ When both platforms run on the same machine, no TCP listener or firewall rule
 is needed. Use the destination platform's local VIP socket directly:
 
 ```text
-ipc:///home/user/.volttron-destination/run/vip.socket
+ipc:///YOUR_DESTINATION_VOLTTRON_HOME/run/vip.socket
 ```
 
 Confirm that the destination socket exists:
 
 ```bash
-ls -l /home/user/.volttron-destination/run/vip.socket
+ls -l YOUR_DESTINATION_VOLTTRON_HOME/run/vip.socket
 ```
 
 Use this exact value as `destination-address` in `forwarder.config`:
 
 ```json
 {
-  "destination-address": "ipc:///home/user/.volttron-destination/run/vip.socket",
+  "destination-address": "ipc:///YOUR_DESTINATION_VOLTTRON_HOME/run/vip.socket",
   "required_target_agents": [],
   "capture_device_data": true,
   "capture_analysis_data": false,
@@ -170,13 +170,13 @@ vctl config store platform.forwarder config forwarder.config
 The install creates this credential on the source:
 
 ```text
-/home/user/.volttron-source/credentials_store/platform.forwarder.json
+YOUR_SOURCE_VOLTTRON_HOME/credentials_store/platform.forwarder.json
 ```
 
 Open it and copy its `publickey` value:
 
 ```bash
-nano /home/user/.volttron-source/credentials_store/platform.forwarder.json
+nano YOUR_SOURCE_VOLTTRON_HOME/credentials_store/platform.forwarder.json
 ```
 
 ## 4. Authorize the Forwarder on the Destination
@@ -184,7 +184,7 @@ nano /home/user/.volttron-source/credentials_store/platform.forwarder.json
 On the destination host, create a credential file for the source forwarder:
 
 ```bash
-nano /home/user/.volttron-destination/credentials_store/platform.forwarder.json
+nano YOUR_DESTINATION_VOLTTRON_HOME/credentials_store/platform.forwarder.json
 ```
 
 Paste the following and replace the public key with the source forwarder's
