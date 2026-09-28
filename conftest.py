@@ -10,6 +10,9 @@ import sys
 import platform
 from pathlib import Path
 
+from gevent import monkey
+if not monkey.is_module_patched("subprocess"):
+    monkey.patch_subprocess()
 
 WORKSPACE = Path(__file__).parent.parent
 LOCAL_SOURCE_TREES = (
@@ -25,7 +28,15 @@ for source_tree in reversed(LOCAL_SOURCE_TREES):
         sys.path.insert(0, str(source_tree))
 
 
-# VOLTTRON's topic constants inspect the processor at import time.  In this
-# container ``platform.processor()`` invokes a subprocess which can block while
-# pytest is collecting; the value is not relevant to these tests.
+# VOLTTRON's topic constants inspect platform.uname()[1] at import time. In this
+# container ``platform.uname()`` invokes a subprocess which can block while
+# pytest is collecting; use os.uname() or static values instead.
 platform.processor = lambda: ""
+try:
+    platform.uname = lambda: platform.uname_result("Linux", "localhost", "5.15.0", "1", "x86_64")
+except Exception:
+    pass
+
+if hasattr(platform, "_syscmd_uname"):
+    platform._syscmd_uname = lambda *args, **kwargs: ""
+
