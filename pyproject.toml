@@ -1,0 +1,48 @@
+[tool.poetry]
+name = "volttron-forward-historian"
+version = "2.0.0rc0"
+description = "VOLTTRON historian agent that forwards data to another VOLTTRON instance."
+authors = ["VOLTTRON Team <volttron@pnnl.gov>"]
+license = "Apache License 2.0"
+readme = "README.md"
+repository = "https://github.com/eclipse-volttron/volttron-forward-historian"
+homepage = "https://github.com/eclipse-volttron/volttron-forward-historian"
+keywords = []
+packages = [{ include = "historian", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+volttron-lib-base-historian = ">=2.0.0rc0"
+pyzmq = ">=25.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+mock = "^5.1.0"
+volttron-testing = ">=0.5.0rc1"
+
+[tool.yapf]
+based_on_style = "pep8"
+spaces_before_comment = 4
+column_limit = 99
+split_before_logical_operator = true
+
+[tool.yapfignore]
+ignore_patterns = [
+    ".venv/**",
+    ".pytest_cache/**",
+    "dist/**",
+    "docs/**"
+]
+
+[tool.poetry.scripts]
+volttron-forward-historian = "historian.forwarder.forwarder:main"
+
+[tool.pytest.ini_options]
+markers = [
+    "historian: tests that require historian services",
+    "forwarder: tests that require multiple VOLTTRON platforms"
+]
+
+[build-system]
+requires = ["poetry-core>=1.2.0"]
+build-backend = "poetry.core.masonry.api"
