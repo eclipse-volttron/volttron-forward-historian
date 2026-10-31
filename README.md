@@ -203,28 +203,39 @@ vctl auth agentcred platform.forwarder --json
 
 ## 4. Authorize the Forwarder on the Destination
 
+The forwarder connects to the destination as `<source instance name>.<identity>`,
+for example `YOUR_SOURCE_INSTANCE_NAME.platform.forwarder`. The source instance
+name is the `instance-name` in the source platform's `VOLTTRON_HOME/config`.
+Qualifying the identity lets several sites forward to one destination: the
+destination keeps a single connection per identity and silently ignores any
+other connection that claims the same name.
+
 On the destination host, or in a destination-platform shell on a shared
 machine, select the destination platform. Do not run these commands with the
 source platform's `VOLTTRON_HOME`.
 
 ```bash
 export VOLTTRON_HOME=/path/to/DESTINATION_VOLTTRON_HOME
-vctl auth add platform.forwarder \
+vctl auth add YOUR_SOURCE_INSTANCE_NAME.platform.forwarder \
   --publickey "paste-the-source-forwarder-publickey-here"
 ```
 
 This stores the remote agent's public credentials without requiring a private
-key or manual JSON file creation. If `platform.forwarder` already exists on the
-destination, remove the stale record before registering a new key:
+key or manual JSON file creation. If the qualified identity already exists on
+the destination, remove the stale record before registering a new key:
 
 ```bash
-vctl auth remove platform.forwarder
-vctl auth add platform.forwarder \
+vctl auth remove YOUR_SOURCE_INSTANCE_NAME.platform.forwarder
+vctl auth add YOUR_SOURCE_INSTANCE_NAME.platform.forwarder \
   --publickey "paste-the-source-forwarder-publickey-here"
 ```
 
 Confirm the removal when prompted. `vctl auth add` does not replace an existing
 credential record.
+
+Earlier releases connected with the bare identity (`platform.forwarder`). When
+upgrading, register the qualified name on the destination as above and remove
+the bare entry once the upgraded forwarder has connected.
 
 ## 5. Start and Verify
 

@@ -22,6 +22,7 @@
 # ===----------------------------------------------------------------------===
 # }}}
 
+import dataclasses
 import datetime
 import logging
 import os
@@ -32,6 +33,7 @@ import traceback
 import gevent
 
 from volttron.client.vip.agent import Agent, Unreachable
+from volttron.client.vip.agent.subsystems.query import Query
 from volttron import utils
 from historian.base import BaseHistorian
 from historian.base.base_historian import add_timing_data_to_header
@@ -96,6 +98,11 @@ class ForwardHistorian(BaseHistorian):
     This historian forwards data to another instance as if it was published
     originally to the second instance.
     """
+
+    # Seconds historian_setup waits for the remote core to connect before giving up
+    # and stopping it. Shorter than the core's own hello check so the forwarder, not
+    # the core, decides when a connection attempt has failed.
+    connection_timeout = 30
 
     def __init__(self, destination_vip, destination_serverkey,
                  custom_topic_list=[],
@@ -497,8 +504,11 @@ class ForwardHistorian(BaseHistorian):
         try:
             # Reuse this agent's own credentials (provisioned by the platform in
             # VOLTTRON_HOME/credentials_store) to build an outbound connection to
-            # the remote platform. The message bus negotiates authentication natively.
-            credentials = self.get_credentials(self.core.identity)
+            # the remote platform; the message bus negotiates authentication natively.
+            # Only the identity changes: the destination sees <instance>.<identity>
+            # so forwarders from different sites do not collide there.
+            credentials = dataclasses.replace(self.get_credentials(self.core.identity),
+                                              identity=self.remote_identity())
 
             # Force inclusion of the remote server key directly in the connection address query params
             from urllib.parse import urlsplit, urlunsplit, parse_qs
@@ -516,12 +526,7 @@ class ForwardHistorian(BaseHistorian):
             address = urlunsplit(url)
 
             remote_agent = Agent(address=address, credentials=credentials)
-
-            # Spawn the remote agent's core event loop and wait for it to connect.
-            event = gevent.event.Event()
-            gevent.spawn(remote_agent.core.run, event)
-            with gevent.Timeout(30):
-                event.wait()
+            self._run_remote_core(remote_agent)
 
         except gevent.Timeout:
             _log.error("Couldn't connect to address. gevent timeout: ({})".format(address))
@@ -533,6 +538,56 @@ class ForwardHistorian(BaseHistorian):
             self._target_platform = remote_agent
             self.vip.health.set_status(
                 STATUS_GOOD, "Connected to address ({})".format(address))
+
+    def remote_identity(self) -> str:
+        """Identity this forwarder presents to the destination: <source instance name>.<identity>.
+
+        This mirrors Monolithic's connect_remote_platform, which connects as the fully
+        qualified identity. A bare identity would make every site's forwarder claim the
+        same name at a shared destination, and the destination's router keeps one
+        connection per identity and silently drops the rest. The destination must
+        register this forwarder's credentials under the qualified name (README step 4).
+        """
+        instance_name = self.instance_name
+        if not instance_name:
+            try:
+                instance_name = Query(self.core).query('instance-name').get(timeout=5)
+            except Exception as ex:
+                _log.warning(f"Could not query the source instance name: {ex!r}")
+        if not instance_name:
+            _log.warning(f"Source instance name unknown; connecting to the destination with the bare "
+                         f"identity {self.core.identity}. Forwarders from other sites using the same "
+                         f"identity will collide with this one.")
+            return self.core.identity
+        return f"{instance_name}.{self.core.identity}"
+
+    def _run_remote_core(self, remote_agent):
+        """Run the remote agent's core and wait up to connection_timeout for it to connect.
+
+        On timeout the core is stopped before the Timeout propagates. Otherwise it
+        keeps running with nobody holding a reference to it; if the destination's
+        welcome arrives after our deadline but before the core's own hello check
+        gives up, the orphan connects and holds our identity at the destination for
+        the life of this process. The destination's ROUTER socket then silently
+        drops every later connection with that identity, so each retry fails with
+        "No response to hello message" until the forwarder is restarted.
+        """
+        event = gevent.event.Event()
+        core_greenlet = gevent.spawn(remote_agent.core.run, event)
+        try:
+            with gevent.Timeout(self.connection_timeout):
+                event.wait()
+        except gevent.Timeout:
+            _log.warning(f"No connection to the destination after {self.connection_timeout} seconds; "
+                         f"stopping the remote core so it cannot connect later and hold the identity")
+            stopped = False
+            try:
+                stopped = remote_agent.core.stop(timeout=self.connection_timeout)
+            except Exception as ex:
+                _log.debug(f"Error stopping unconnected remote core: {ex!r}")
+            if not stopped and not core_greenlet.dead:
+                core_greenlet.kill(block=True, timeout=self.connection_timeout)
+            raise
 
     def _remote_connection_alive(self) -> bool:
         """Return True if the cached remote connection still has a live socket.
